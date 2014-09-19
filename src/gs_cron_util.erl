@@ -1,7 +1,8 @@
 -module(gs_cron_util).
 
 -export([unixtime/0,
-         ceil/1]).
+         ceil/1,
+         send/2]).
 
 unixtime() ->
     {Megasecs, Secs, Microsecs} = os:timestamp(),
@@ -14,3 +15,13 @@ ceil(X) ->
         Pos when Pos > 0 -> T + 1;
         _ -> T
     end.
+
+send(Pid, Msg) ->    
+    Pid ! Msg.
+
+
+datetime_plus(DateTime, PlusTime) ->
+    Seconds = calendar:datetime_to_gregorian_seconds(DateTime) + 
+        calendar:time_to_seconds(PlusTime),
+    calendar:gregorian_seconds_to_datetime(Seconds).
+    

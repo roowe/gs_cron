@@ -29,7 +29,6 @@
 -define(MILLISECONDS, 1000).
 -define(WAIT_BEFORE_RUN, 2000).
 
-%% {test, monthly, [{{1, 1, 1}, {io, fwrite, ["{1, 1, 1} It's running~n"]}}]}
 start_link({Name, CycleType, CycleData})->
     gen_server:start_link({local, Name}, ?MODULE, [CycleType, CycleData], []).
 
@@ -42,20 +41,53 @@ cancel(Name) ->
 set_datetime(PidOrName, ReferenceGregorianSeconds, CurrentTimeStamp) ->
     gen_server:cast(PidOrName, {set_datetime, ReferenceGregorianSeconds, CurrentTimeStamp}).
 
+is_mfa({_, _, _}) ->
+    true;
+is_mfa(_) ->
+    false.
+
 is_monthly_day(Day) ->
     Day >= 1 andalso Day =< 31.
+
+is_weekly_day(Day) ->
+    Day >= 1 andalso Day =< 7.
 
 is_time(Hour, Minute) ->
     Hour >= 0 andalso Hour < 24 andalso 
         Minute >= 0 andalso Minute < 60.
 
+is_time(Hour, Minute, Seconds) ->
+    Hour >= 0 andalso Hour < 24 andalso 
+        Minute >= 0 andalso Minute < 60 andalso
+        Seconds >=0 andalso Seconds < 60.
+
 validate({_, CycleType, CycleData}) ->
     validate(CycleType, CycleData).
 
+validate(once, CycleData) ->
+    validate2(CycleData, fun({{Year, Month, Day, Hour, Minute, Seconds}, MFA}) ->
+                                 calendar:valid_date({Year, Month, Day}) andalso is_time(Hour, Minute, Seconds) andalso is_mfa(MFA)
+                         end);
+validate(daily, CycleData) ->
+    validate2(CycleData, fun({{Hour, Minute}, MFA}) ->
+                                 is_time(Hour, Minute) andalso is_mfa(MFA)
+                         end);
+validate(weekly, CycleData) ->
+    validate2(CycleData, fun({{DayW, Hour, Minute}, MFA}) ->
+                                 is_weekly_day(DayW) andalso 
+                                     is_time(Hour, Minute) andalso is_mfa(MFA)
+                         end);
 validate(monthly, CycleData) ->
-    InvalidCycleData = lists:foldl(fun({{DayM, Hour, Minute}, _}=Job, Acc) ->
-                                           case {is_monthly_day(DayM), is_time(Hour, Minute)} of
-                                               {true, true} ->
+    validate2(CycleData, fun({{DayM, Hour, Minute}, MFA}) ->
+                                 is_monthly_day(DayM) andalso 
+                                     is_time(Hour, Minute) andalso is_mfa(MFA)
+                         end).
+
+
+validate2(CycleData, Fun) ->
+    InvalidCycleData = lists:foldl(fun(Job, Acc) ->
+                                           case Fun(Job) of
+                                               true ->
                                                    Acc;
                                                _ ->
                                                    [Job|Acc]
@@ -78,15 +110,14 @@ init([CycleType, CycleData])
   when is_tuple(CycleData) ->
     init([CycleType, [CycleData]]);
 init([CycleType, CycleData]) ->
-    State = #state{
-               reference_gregorian_seconds = mochiglobal:get(reference_gregorian_seconds),
-               current_timestamp = mochiglobal:get(current_timestamp),
-               cycle_type = CycleType,
-               cycle_data = cycle_data_sort(CycleType, CycleData)
-              },
-    case validate(State#state.cycle_type,
-                  State#state.cycle_data) of
+    case validate(CycleType, CycleData) of
         valid ->
+            State = #state{
+                       reference_gregorian_seconds = mochiglobal:get(reference_gregorian_seconds),
+                       current_timestamp = mochiglobal:get(current_timestamp),
+                       cycle_type = CycleType,
+                       cycle_data = cycle_data_sort(CycleType, CycleData)
+                      },
             case until_next_milliseconds(State) of
                 {ok, Millis, MFA} ->
                     {ok, State#state{
@@ -130,10 +161,9 @@ handle_cast({set_datetime, ReferenceGregorianSeconds, CurrentTimeStamp}, State) 
             {stop, normal, NewState}
     end.
 %% @private
-%% handle_info(timeout, State = #state{job = {{once, _}, _}}) ->
-%%     do_job_run(State, State#state.job),
-%%     {stop, normal, State};
-handle_info(timeout, State = #state{timeout_type=wait_before_run}) ->
+handle_info(timeout, #state{
+                        timeout_type = wait_before_run
+                       } = State) ->
     NewState = State#state{timeout_type=normal},
     case until_next_milliseconds(NewState) of
         {ok, Millis, MFA} ->
@@ -160,7 +190,14 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-cycle_data_sort(monthly, CycleData) ->
+
+cycle_data_sort(once, [{{_, _, _, _, _, _}, _}|_]=CycleData0) ->
+    CycleData = [begin
+                     GregorianSeconds = calendar:datetime_to_gregorian_seconds({{Year, Month, Day}, {Hour, Minute, Seconds}}),
+                     {GregorianSeconds, MFA}
+                 end || {{Year, Month, Day, Hour, Minute, Seconds}, MFA} <- CycleData0],
+    cycle_data_sort(once, CycleData);
+cycle_data_sort(_, CycleData) ->
     SortCycleData = lists:keysort(1, CycleData),
     ?PRINT("~p~n", [SortCycleData]),
     SortCycleData.
@@ -173,13 +210,6 @@ do_job_run(#state{
 do_job_run({M, F, A}) ->
     proc_lib:spawn(M, F, A).
 
-%% 返回今天过去的秒数
-past_midnight_seconds(State) ->
-    calendar:time_to_seconds(element(2, current_datetime(State))).
-
-
-current_datetime(State) ->
-    element(1, current(State)).
 
 current(#state{
            fast_forward = true,
@@ -198,24 +228,53 @@ current(#state{
 
 
 until_next_milliseconds(State) ->
-    try
-        {Seconds, MFA} = until_next_time(State),
-        ?PRINT("Seconds ~p~n", [Seconds]),
-        {ok, Seconds*?MILLISECONDS, MFA}
-    catch
-        throw:invalid_once_exception ->
-            {error, invalid_once_exception}
+    case until_next_time(State) of
+        not_found ->
+            {error, not_found};
+        {Seconds, MFA} ->
+            ?PRINT("Seconds ~p~n", [Seconds]),
+            {ok, Seconds*?MILLISECONDS, MFA}
     end.
 
-normalize_seconds(State, Seconds) ->
-    case Seconds - past_midnight_seconds(State) of
-        Value when Value >= 0 ->
-            Value;
-        _ ->
-            error_logger:error_msg("invalid_once_exception ~p~n", [erlang:get_stacktrace()]),
-            throw(invalid_once_exception)
-    end.
 
+until_next_time(#state{
+                   cycle_type = once,
+                   cycle_data = CycleData
+                  } = State) ->    
+    {_CurrentDateTime, GregorianSeconds} = current(State),
+    case [{NextGregorianSeconds, MFA} || {NextGregorianSeconds, MFA} <- CycleData, 
+                                         NextGregorianSeconds >= GregorianSeconds] of
+        [] ->
+            not_found;
+        [{NextGregorianSeconds, MFA}|_] ->
+            Seconds = NextGregorianSeconds - GregorianSeconds,
+            %% NextDateTime = calendar:gregorian_seconds_to_datetime(NextGregorianSeconds),
+            %% ?PRINT("Next ~p~n", [NextDateTime]),
+            {Seconds, MFA}
+    end;
+until_next_time(#state{
+                   cycle_type = daily,
+                   cycle_data = CycleData
+                  } = State) ->
+    {CurrentDateTime, GregorianSeconds} = current(State),
+    case daily_next(CurrentDateTime, GregorianSeconds, CycleData) of
+        {Seconds, MFA} ->
+            {Seconds, MFA};
+        not_found ->
+            daily_next_day(CurrentDateTime, GregorianSeconds, CycleData)
+    end;
+until_next_time(#state{
+                   cycle_type = weekly,
+                   cycle_data = CycleData
+                  } = State) ->
+    {{CurrentDate, _} = CurrentDateTime, GregorianSeconds} = current(State),    
+    WeekDay = calendar:day_of_the_week(CurrentDate),
+    case weekly_next(CurrentDateTime, GregorianSeconds, WeekDay, CycleData) of
+        {Seconds, MFA} ->
+            {Seconds, MFA};
+        not_found ->
+            weekly_next_week(CurrentDateTime, GregorianSeconds, WeekDay, CycleData)
+    end;
 until_next_time(#state{
                    cycle_type = monthly,
                    cycle_data = CycleData
@@ -224,30 +283,74 @@ until_next_time(#state{
     case monthly_next(CurrentDateTime, GregorianSeconds, 
                       calendar:last_day_of_the_month(CurrentY, CurrentM),
                       CycleData) of
-        {Seconds0, MFA0} ->
-            {Seconds0, MFA0};
-        not_find ->
+        {Seconds, MFA} ->
+            {Seconds, MFA};
+        not_found ->
             monthly_next_month(CurrentDateTime, GregorianSeconds, CycleData)
     end.
-    
+
+
+daily_next(_, _, []) ->
+    not_found;
+daily_next({CurrentDate, _} = CurrentDateTime, GregorianSeconds,
+           [{{Hour, Min}, MFA}|CycleData]) ->
+    NextDateTime = {CurrentDate, {Hour, Min, 0}},
+    if        
+        NextDateTime >= CurrentDateTime ->
+            NextGregorianSeconds = calendar:datetime_to_gregorian_seconds(NextDateTime),
+            ?PRINT("Next ~p~n", [NextDateTime]),
+            {NextGregorianSeconds - GregorianSeconds, MFA};
+        true ->
+            daily_next(CurrentDateTime, GregorianSeconds, CycleData)
+    end.
+
+daily_next_day({CurrentDate, _}, GregorianSeconds,
+               [{{Hour, Min}, MFA}|_]) ->
+    NextGregorianSeconds = calendar:datetime_to_gregorian_seconds({CurrentDate, {0, 0, 0}}) + calendar:time_to_seconds({24 + Hour, Min, 0}),    
+    %% NextDateTime = calendar:gregorian_seconds_to_datetime(NextGregorianSeconds),
+    %% ?PRINT("Next ~p~n", [NextDateTime]),
+    {NextGregorianSeconds - GregorianSeconds, MFA}.
+
+
+weekly_next(_, _, _, []) ->
+    not_found;
+weekly_next({CurrentDate, _} = CurrentDateTime, 
+             GregorianSeconds, CurrentWeekDay,
+             [{{DayW, Hour, Min}, MFA}|CycleData]) ->
+    DayDiff = DayW - CurrentWeekDay,
+    NextGregorianSeconds = calendar:datetime_to_gregorian_seconds({CurrentDate, {0, 0, 0}}) + calendar:time_to_seconds({DayDiff*24 + Hour, Min, 0}),
+    if
+        NextGregorianSeconds >= GregorianSeconds ->
+            %% NextDateTime = calendar:gregorian_seconds_to_datetime(NextGregorianSeconds),
+            %% ?PRINT("Next ~p~n", [NextDateTime]),
+            {NextGregorianSeconds - GregorianSeconds, MFA};
+        true ->
+            weekly_next(CurrentDateTime, GregorianSeconds, CurrentWeekDay, CycleData)
+    end.
+
+weekly_next_week({CurrentDate, _}, 
+                   GregorianSeconds, CurrentWeekDay,
+                   [{{DayW, Hour, Min}, MFA}|_]) ->
+    DayDiff = DayW - CurrentWeekDay + 7,
+    NextGregorianSeconds = calendar:datetime_to_gregorian_seconds({CurrentDate, {0, 0, 0}}) + calendar:time_to_seconds({DayDiff*24 + Hour, Min, 0}),    
+    %% NextDateTime = calendar:gregorian_seconds_to_datetime(NextGregorianSeconds),
+    %% ?PRINT("Next ~p~n", [NextDateTime]),
+    {NextGregorianSeconds - GregorianSeconds, MFA}.
+       
 
 monthly_next(_, _, _, []) ->
-    not_find;
+    not_found;
 monthly_next({{CurrentY, CurrentM, CurrentD}, _} = CurrentDateTime, 
              GregorianSeconds, LastDay,
              [{{Day, Hour, Min}, MFA}|CycleData]) ->
+    NextDateTime = {{CurrentY, CurrentM, Day}, {Hour, Min, 0}},
     if
         Day >= CurrentD andalso 
-        Day =< LastDay ->
-            NextDateTime = {{CurrentY, CurrentM, Day}, {Hour, Min, 0}},
+        Day =< LastDay andalso
+        NextDateTime >= CurrentDateTime ->
             NextGregorianSeconds = calendar:datetime_to_gregorian_seconds(NextDateTime),
-            if
-                NextGregorianSeconds >= GregorianSeconds ->
-                    ?PRINT("Next ~p~n", [NextDateTime]),
-                    {NextGregorianSeconds - GregorianSeconds, MFA};
-                true ->
-                    monthly_next(CurrentDateTime, GregorianSeconds, LastDay, CycleData)
-            end;
+            ?PRINT("Next ~p~n", [NextDateTime]),
+            {NextGregorianSeconds - GregorianSeconds, MFA};
         true ->
             monthly_next(CurrentDateTime, GregorianSeconds, LastDay, CycleData)
     end.
@@ -276,128 +379,26 @@ next_month(Year, Month, Day) ->
             {NextYear, NextMonth, Day}
     end.
 
-
-%% @doc Calculates the duration in seconds until the next time this
-%% period is to occur during the day.
-%% -spec until_next_daytime/2 :: (state(), erlcron:period()) -> erlcron:seconds().
-%% until_next_daytime(State, Period) ->
-%%     StartTime = first_time(Period),
-%%     EndTime = last_time(Period),
-%%     case current_time(State) of
-%%         T when T > EndTime ->
-%%             until_tomorrow(State, StartTime);
-%%         T ->
-%%             next_time(Period, T) - T
-%%     end.
-
-%% @doc Calculates the last time in a given period.
-%% -spec last_time/1 :: (erlcron:period()) -> erlcron:seconds().
-%% last_time(Period) ->
-%%     hd(lists:reverse(lists:sort(resolve_period(Period)))).
-
-
-%% %% @doc Calculates the first time in a given period.
-%% -spec first_time/1 :: (erlcron:period()) -> erlcron:seconds().
-%% first_time(Period) ->
-%%     hd(lists:sort(resolve_period(Period))).
-
-%% %% @doc Calculates the first time in the given period after the given time.
-%% -spec next_time/2 :: (erlcron:period(), erlcron:seconds()) -> erlcron:seconds().
-%% next_time(Period, Time) ->
-%%     R = lists:sort(resolve_period(Period)),
-%%     lists:foldl(fun(X, A) ->
-%%                         case X of
-%%                             T when T >= Time, T < A ->
-%%                                 T;
-%%                             _ ->
-%%                                 A
-%%                         end
-%%                 end, 24*3600, R).
-
-%% @doc Returns a list of times given a periodic specification.
-%% -spec resolve_period/1 :: ([erlcron:period()] | erlcron:period()) -> [erlcron:seconds()].
-%% resolve_period([]) ->
-%%     [];
-%% resolve_period([H | T]) ->
-%%     resolve_period(H) ++ resolve_period(T);
-%% resolve_period({every, Duration, {between, TimeA, TimeB}}) ->
-%%     Period = resolve_dur(Duration),
-%%     StartTime = resolve_time(TimeA),
-%%     EndTime = resolve_time(TimeB),
-%%     resolve_period0(Period, StartTime, EndTime, []);
-%% resolve_period(Time) ->
-%%     [resolve_time(Time)].
-
-%% resolve_period0(_, Time, EndTime, Acc) when Time >= EndTime ->
-%%     Acc;
-%% resolve_period0(Period, Time, EndTime, Acc) ->
-%%     resolve_period0(Period, Time + Period, EndTime, [Time | Acc]).
-
-%% %% @doc Returns seconds past midnight for a given time.
-%% -spec resolve_time/1 :: (erlcron:cron_time()) -> erlcron:seconds().
-%% resolve_time({H, M, S}) when H < 24, M < 60, S < 60  ->
-%%     S + M * 60 + H * 3600;
-%% resolve_time({H, M, S, X}) when  H < 24, M < 60, S < 60, is_atom(X) ->
-%%     resolve_time({H, X}) + M * 60 + S;
-%% resolve_time({H, M, X}) when  H < 24, M < 60, is_atom(X) ->
-%%     resolve_time({H, X}) + M * 60;
-%% resolve_time({12, am}) ->
-%%     0;
-%% resolve_time({H,  am}) when H < 12 ->
-%%     H * 3600;
-%% resolve_time({12, pm}) ->
-%%     12 * 3600;
-%% resolve_time({H,  pm}) when H < 12->
-%%     (H + 12) * 3600.
-
-%% %% @doc Returns seconds for a given duration.
-%% -spec resolve_dur/1 :: (erlcron:duration()) -> erlcron:seconds().
-%% resolve_dur({Hour, hr}) ->
-%%     Hour * 3600;
-%% resolve_dur({Min, min}) ->
-%%     Min * 60;
-%% resolve_dur({Sec, sec}) ->
-%%     Sec.
-
-
-%% @doc Calculates the duration in seconds until the given time occurs
-%% tomorrow.
-%% -spec until_tomorrow/2 :: (state(), erlcron:seconds()) -> erlcron:seconds().
-%% until_tomorrow(State, StartTime) ->
-%%     (StartTime + 24*3600) - current_time(State).
-
-%% @doc Calculates the duration in seconds until the given period
-%% occurs several days from now.
-%% until_days_from_now(State, Period, Days) ->
-%%     Days * 24 * 3600 + until_next_daytime(State, Period).
-
-%% @doc Calculates the duration in seconds until the given period
-%% occurs, which may be today or several days from now.
-
-%% until_next_daytime_or_days_from_now(State, Period, Days) ->
-%%     CurrentTime = current_time(State),
-%%     case last_time(Period) of
-%%         T when T < CurrentTime ->
-%%             until_days_from_now(State, Period, Days);
-%%         _ ->
-%%             until_next_daytime(State, Period)
-%%     end.
-
-
-
-
 fast_forward(#state{
+                cycle_type = CycleType,
                 reference_gregorian_seconds = ReferenceGregorianSeconds
                } = State, NewReferenceGregorianSeconds) ->
-    {Seconds, MFA} = until_next_time(State),       
-    Span = NewReferenceGregorianSeconds - ReferenceGregorianSeconds,
-    case Span > Seconds of
-        true ->
-            %% =:=这个会在返回之后触发，故不在这里处理
-            ?PRINT("MFA ~p Seconds ~p, Span ~p~n", [MFA, Seconds, Span]),
-            NewState = State#state{reference_gregorian_seconds = ReferenceGregorianSeconds + Seconds + 2},
-            do_job_run(MFA),
-            fast_forward(NewState, NewReferenceGregorianSeconds);
-        false ->
-            ok
+    case until_next_time(State) of
+        not_found ->
+            ok;
+        {Seconds, MFA} ->
+            {Seconds, MFA} = until_next_time(State),       
+            Span = NewReferenceGregorianSeconds - ReferenceGregorianSeconds,
+            case Span > Seconds of
+                true ->
+                    %% =:=这个会在返回之后触发，故不在这里处理
+                    ?PRINT("~p MFA ~p Seconds ~p, Span ~p~n", [CycleType, MFA, Seconds, Span]),
+                    NewState = State#state{reference_gregorian_seconds = ReferenceGregorianSeconds + Seconds + 2},
+                    do_job_run(MFA),
+                    fast_forward(NewState, NewReferenceGregorianSeconds);
+                false ->
+                    ok
+            end
     end.
+
+    

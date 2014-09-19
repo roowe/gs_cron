@@ -14,7 +14,7 @@ start_link() ->
     supervisor:start_link({local, ?SERVER}, ?MODULE, []).
 
 add_job(Job) ->
-    {ok, _} = supervisor:start_child(?SERVER, [Job]).
+    supervisor:start_child(?SERVER, [Job]).
 
 all_child_pids() ->
     [Child || {_Id, Child, _Type, _Modules} <- supervisor:which_children(?MODULE)].
