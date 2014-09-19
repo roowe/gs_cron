@@ -1,0 +1,12 @@
+{application, gs_cron,
+ [
+  {description, ""},
+  {vsn, "1"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib
+                 ]},
+  {mod, { gs_cron_app, []}},
+  {env, []}
+ ]}.
