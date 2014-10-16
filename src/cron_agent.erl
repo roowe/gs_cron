@@ -70,7 +70,9 @@ validate(once, CycleData) ->
                          end);
 validate(daily, CycleData) ->
     validate2(CycleData, fun({{Hour, Minute}, MFA}) ->
-                                 is_time(Hour, Minute) andalso is_mfa(MFA)
+                                 is_time(Hour, Minute) andalso is_mfa(MFA);
+                            ({{Hour, Minute, Seconds}, MFA}) ->
+                                 is_time(Hour, Minute, Seconds) andalso is_mfa(MFA)
                          end);
 validate(weekly, CycleData) ->
     validate2(CycleData, fun({{DayW, Hour, Minute}, MFA}) ->
@@ -197,6 +199,16 @@ cycle_data_sort(once, [{{_, _, _, _, _, _}, _}|_]=CycleData0) ->
                      {GregorianSeconds, MFA}
                  end || {{Year, Month, Day, Hour, Minute, Seconds}, MFA} <- CycleData0],
     cycle_data_sort(once, CycleData);
+cycle_data_sort(daily, CycleData0) ->
+    CycleData = [case Time of
+                     {Hour, Minute} ->
+                         {{Hour, Minute, 0}, MFA};
+                     {Hour, Minute, Seconds} ->
+                         {{Hour, Minute, Seconds}, MFA}
+                 end || {Time, MFA} <- CycleData0],
+    SortCycleData = lists:keysort(1, CycleData),
+    ?PRINT("~p~n", [SortCycleData]),
+    SortCycleData;
 cycle_data_sort(_, CycleData) ->
     SortCycleData = lists:keysort(1, CycleData),
     ?PRINT("~p~n", [SortCycleData]),
@@ -293,8 +305,8 @@ until_next_time(#state{
 daily_next(_, _, []) ->
     not_found;
 daily_next({CurrentDate, _} = CurrentDateTime, GregorianSeconds,
-           [{{Hour, Min}, MFA}|CycleData]) ->
-    NextDateTime = {CurrentDate, {Hour, Min, 0}},
+           [{Time, MFA}|CycleData]) ->
+    NextDateTime = {CurrentDate, Time},
     if        
         NextDateTime >= CurrentDateTime ->
             NextGregorianSeconds = calendar:datetime_to_gregorian_seconds(NextDateTime),
@@ -305,8 +317,8 @@ daily_next({CurrentDate, _} = CurrentDateTime, GregorianSeconds,
     end.
 
 daily_next_day({CurrentDate, _}, GregorianSeconds,
-               [{{Hour, Min}, MFA}|_]) ->
-    NextGregorianSeconds = calendar:datetime_to_gregorian_seconds({CurrentDate, {0, 0, 0}}) + calendar:time_to_seconds({24 + Hour, Min, 0}),    
+               [{{Hour, Minute, Seconds}, MFA}|_]) ->
+    NextGregorianSeconds = calendar:datetime_to_gregorian_seconds({CurrentDate, {0, 0, 0}}) + calendar:time_to_seconds({24 + Hour, Minute, Seconds}),    
     %% NextDateTime = calendar:gregorian_seconds_to_datetime(NextGregorianSeconds),
     %% ?PRINT("Next ~p~n", [NextDateTime]),
     {NextGregorianSeconds - GregorianSeconds, MFA}.

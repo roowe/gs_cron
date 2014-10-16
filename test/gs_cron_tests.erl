@@ -98,12 +98,12 @@ daily_cron_test(_) ->
     Self = self(),
 
     gs_cron:cron({daily_cron_test, daily, 
-                  [{{0,1}, {gs_cron_util, send, [Self, daily_cron_test_ack1]}},
+                  [{{0,1,1}, {gs_cron_util, send, [Self, daily_cron_test_ack1]}},
                    {{9,10}, {gs_cron_util, send, [Self, daily_cron_test_ack2]}}]}),
     ?assertMatch(ok, receive
                          daily_cron_test_ack1-> ok
                      after
-                         1500 -> timeout
+                         2300 -> timeout
                      end),
     gs_cron:set_datetime({{2014,9,22}, {9, 9, 58}}),
     ?assertMatch(ok, receive
@@ -152,6 +152,19 @@ validation_test(_) ->
                                            })),
     ?assertMatch(invalid, gs_cron:validate({test, daily, 
                                             [{{80, 59}, ?MFA}]
+                                           })),
+    
+    ?assertMatch(valid, gs_cron:validate({test, daily, 
+                                          [{{1, 0, 1}, ?MFA}]
+                                         })),
+    ?assertMatch(valid, gs_cron:validate({test, daily, 
+                                          [{{23, 59, 1}, ?MFA}]
+                                         })),
+    ?assertMatch(invalid, gs_cron:validate({test, daily, 
+                                            [{{1, 60, 30}, ?MFA}]
+                                           })),
+    ?assertMatch(invalid, gs_cron:validate({test, daily, 
+                                            [{{1, 59, 90}, ?MFA}]
                                            })),
     
 
