@@ -20,7 +20,8 @@ cron_test_() ->
              fun hourly_cron_test/1,
              fun daily_cron_test/1,
              fun once_cron_test/1,
-             fun validation_test/1]}}.
+             fun validation_test/1
+            ]}}.
 
 %% Time jumps ahead one day so we should see the alarms from both days.
 monthly_cron_test(_) ->    
@@ -59,17 +60,17 @@ weekly_cron_test(_) ->
 
     gs_cron:cron({weekly_cron_test, weekly, 
                   [{{3,0,1}, {gs_cron_util, send, [Self, weekly_cron_test_ack1]}},
-                   {{7,9,10}, {gs_cron_util, send, [Self, weekly_cron_test_ack2]}}]}),
+                   {{7,9,10,0}, {gs_cron_util, send, [Self, weekly_cron_test_ack2]}}]}),
     ?assertMatch(ok, receive
                          weekly_cron_test_ack1-> ok
                      after
-                         1500 -> timeout
+                         2200 -> timeout
                      end),
-    gs_cron:set_datetime({{2014,9,21}, {9, 9, 58}}),
+    gs_cron:set_datetime({{2014,9,21}, {9, 9, 59}}),
     ?assertMatch(ok, receive
                          weekly_cron_test_ack2 -> ok
                      after
-                         2500 -> timeout
+                         2200 -> timeout
                      end).
 
 once_cron_test(_) ->
@@ -155,29 +156,30 @@ validation_test(_) ->
     
 
     ?assertMatch(valid, gs_cron:validate({test, weekly, 
-                                          [{{1, 1, 1}, ?MFA}]
+                                          [{check_weekly_data({1, 1,1}), ?MFA}]
                                          })),
     ?assertMatch(valid, gs_cron:validate({test, weekly, 
-                                          [{{7, 23, 59}, ?MFA}, {{2, 23, 59}, ?MFA}]
+                                          [{{7, 23, 59, 9}, ?MFA}, 
+                                           {check_weekly_data({2, 23, 59}), ?MFA}]
                                          })),
     ?assertMatch(invalid, gs_cron:validate({test, weekly, 
-                                            [{{33, 1, 1}, ?MFA}]
+                                            [{check_weekly_data({33, 1, 1}), ?MFA}]
                                            })),
     ?assertMatch(invalid, gs_cron:validate({test, weekly, 
-                                            [{{31, 80, 59}, ?MFA}]
+                                            [{{31, 80, 59,56}, ?MFA}]
                                            })),
 
     ?assertMatch(valid, gs_cron:validate({test, daily, 
-                                          [{{1, 0}, ?MFA}]
+                                          [{check_daily_data({1, 0}), ?MFA}]
                                          })),
     ?assertMatch(valid, gs_cron:validate({test, daily, 
-                                          [{{23, 59}, ?MFA}]
+                                          [{check_daily_data({23, 59}), ?MFA}]
                                          })),
     ?assertMatch(invalid, gs_cron:validate({test, daily, 
-                                            [{{1, 60}, ?MFA}]
+                                            [{check_daily_data({1, 60}), ?MFA}]
                                            })),
     ?assertMatch(invalid, gs_cron:validate({test, daily, 
-                                            [{{80, 59}, ?MFA}]
+                                            [{check_daily_data({80, 59}), ?MFA}]
                                            })),
     
     ?assertMatch(valid, gs_cron:validate({test, daily, 
@@ -218,7 +220,16 @@ validation_test(_) ->
     ?assertMatch(invalid, gs_cron:validate({test, once, 
                                             [{{2013,2,29,10,0,0}, ?MFA}]
                                            })).
-        
+
+check_daily_data({_Hour, _Minute}) ->
+    {_Hour, _Minute, 0};
+check_daily_data({_Hour, _Minute, _Second} = Data) ->
+    Data.
+    
+check_weekly_data({_DayW, _Hour, _Minute}) ->
+    {_DayW, _Hour, _Minute, 0};
+check_weekly_data({_DayW, _Hour, _Minute, _Second} = Data) ->
+    Data.
 
 
 receive_clean() ->
