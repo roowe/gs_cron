@@ -76,15 +76,13 @@ validate(hourly, CycleData) ->
                                  is_time(hour, Minute, Second) andalso is_mfa(MFA)
                          end);
 validate(daily, CycleData) ->
-    validate2(CycleData, fun({{Hour, Minute}, MFA}) ->
-                                 is_time(Hour, Minute) andalso is_mfa(MFA);
-                            ({{Hour, Minute, Seconds}, MFA}) ->
+    validate2(CycleData, fun({{Hour, Minute, Seconds}, MFA}) ->
                                  is_time(Hour, Minute, Seconds) andalso is_mfa(MFA)
                          end);
 validate(weekly, CycleData) ->
-    validate2(CycleData, fun({{DayW, Hour, Minute}, MFA}) ->
+    validate2(CycleData, fun({{DayW, Hour, Minute, Seconds}, MFA}) ->
                                  is_weekly_day(DayW) andalso 
-                                     is_time(Hour, Minute) andalso is_mfa(MFA)
+                                     is_time(Hour, Minute, Seconds) andalso is_mfa(MFA)
                          end);
 validate(monthly, CycleData) ->
     validate2(CycleData, fun({{DayM, Hour, Minute}, MFA}) ->
@@ -110,6 +108,23 @@ validate2(CycleData, Fun) ->
             invalid
     end.
 
+change_cycle_data(weekly, CycleData) ->
+    [case DataTime of
+      {WDay, Hour, Minute} ->
+          {{WDay, Hour, Minute, 0}, MFA};
+      {WDay, Hour, Minute, Seconds} ->
+          {{WDay, Hour, Minute, Seconds}, MFA}
+     end || {DataTime, MFA} <- CycleData];
+change_cycle_data(daily, CycleData) ->
+    [case DataTime of
+      {Hour, Minute} ->
+          {{Hour, Minute, 0}, MFA};
+      {Hour, Minute, Seconds} ->
+          {{Hour, Minute, Seconds}, MFA}
+     end || {DataTime, MFA} <- CycleData];
+change_cycle_data(_Other, CycleData) ->
+    CycleData.
+
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
@@ -118,14 +133,15 @@ validate2(CycleData, Fun) ->
 init([CycleType, CycleData]) 
   when is_tuple(CycleData) ->
     init([CycleType, [CycleData]]);
-init([CycleType, CycleData]) ->
-    case validate(CycleType, CycleData) of
+init([CycleType, CycleData]) -> 
+    NewCycleData = change_cycle_data(CycleType, CycleData),
+    case validate(CycleType, NewCycleData) of
         valid ->
             State = #state{
                        reference_gregorian_seconds = mochiglobal:get(reference_gregorian_seconds),
                        current_timestamp = mochiglobal:get(current_timestamp),
                        cycle_type = CycleType,
-                       cycle_data = cycle_data_sort(CycleType, CycleData)
+                       cycle_data = cycle_data_sort(CycleType, NewCycleData)
                       },
             case until_next_milliseconds(State) of
                 {ok, Millis, MFA} ->
@@ -366,9 +382,9 @@ weekly_next(_, _, _, []) ->
     not_found;
 weekly_next({CurrentDate, _} = CurrentDateTime, 
              GregorianSeconds, CurrentWeekDay,
-             [{{DayW, Hour, Min}, MFA}|CycleData]) ->
+             [{{DayW, Hour, Min, Sec}, MFA}|CycleData]) ->
     DayDiff = DayW - CurrentWeekDay,
-    NextGregorianSeconds = calendar:datetime_to_gregorian_seconds({CurrentDate, {0, 0, 0}}) + calendar:time_to_seconds({DayDiff*24 + Hour, Min, 0}),
+    NextGregorianSeconds = calendar:datetime_to_gregorian_seconds({CurrentDate, {0, 0, 0}}) + calendar:time_to_seconds({DayDiff*24 + Hour, Min, Sec}),
     if
         NextGregorianSeconds >= GregorianSeconds ->
             %% NextDateTime = calendar:gregorian_seconds_to_datetime(NextGregorianSeconds),
@@ -380,9 +396,9 @@ weekly_next({CurrentDate, _} = CurrentDateTime,
 
 weekly_next_week({CurrentDate, _}, 
                    GregorianSeconds, CurrentWeekDay,
-                   [{{DayW, Hour, Min}, MFA}|_]) ->
+                   [{{DayW, Hour, Min, Sec}, MFA}|_]) ->
     DayDiff = DayW - CurrentWeekDay + 7,
-    NextGregorianSeconds = calendar:datetime_to_gregorian_seconds({CurrentDate, {0, 0, 0}}) + calendar:time_to_seconds({DayDiff*24 + Hour, Min, 0}),    
+    NextGregorianSeconds = calendar:datetime_to_gregorian_seconds({CurrentDate, {0, 0, 0}}) + calendar:time_to_seconds({DayDiff*24 + Hour, Min, Sec}),    
     %% NextDateTime = calendar:gregorian_seconds_to_datetime(NextGregorianSeconds),
     %% ?PRINT("Next ~p~n", [NextDateTime]),
     {NextGregorianSeconds - GregorianSeconds, MFA}.
