@@ -64,13 +64,13 @@ weekly_cron_test(_) ->
     ?assertMatch(ok, receive
                          weekly_cron_test_ack1-> ok
                      after
-                         2200 -> timeout
+                         1500 -> timeout
                      end),
-    gs_cron:set_datetime({{2014,9,21}, {9, 9, 59}}),
+    gs_cron:set_datetime({{2014,9,21}, {9, 9, 58}}),
     ?assertMatch(ok, receive
                          weekly_cron_test_ack2 -> ok
                      after
-                         2200 -> timeout
+                         2500 -> timeout
                      end).
 
 once_cron_test(_) ->
